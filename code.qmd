@@ -1,0 +1,657 @@
+---
+title: "inflation-ml"
+format: html
+editor: visual
+editor_options: 
+  chunk_output_type: console
+---
+
+First we do a lot of work on data prep. In the following code section, we build a dataset consisting of multiple high-frequency (monthly) demand and supply side economic indicators. Things like exchange rate movement, fertilizer sales, auto and POL sales, M2 and Credit to Private Sector trends, etc. We do this by first downloading a series of datasets from the new SBP data portal Easydata (https://easydata.sbp.org.pk). We download all sorts of data from this site. We put them all in a folder called easydata files. And then we read all the CSVs.
+
+After import and consolidation, we filter out only the data series that we need.
+
+We do a lot of data wrangling to arrive at a final clean table that is exported as "final_data.csv".
+
+```{r multi variables inflation data prep}
+
+library(tidyverse)
+
+setwd("C:/Users/ijlal/OneDrive/Documents/Personal/Portfolio/inflation-ml")
+
+# import of easydata data files
+combined_data <- 
+  list.files("./easydata files",pattern = "csv",full.names = T) %>% 
+  map(~read_csv(.,show_col_types = F)) %>% 
+  bind_rows() %>% 
+  janitor::clean_names() %>% 
+  mutate(date = dmy(observation_date),value = observation_value) %>% 
+  select(-observation_date,-series_display_name,-observation_value,-observation_status,-observation_status_comment,-sequence_no,-unit)
+
+# series codes to be filtered
+des_series <- 
+  c("TS_GP_BOP_BPM6SUM_M.P00010",
+"TS_GP_BOP_BPM6SUM_M.P00090",
+"TS_GP_BOP_BPM6SUM_M.P00190",
+"TS_GP_BOP_BPM6SUM_M.P00730",
+"TS_GP_BAM_CRLONBOR_M.CLB00023000",
+"TS_GP_ER_FAERPKR_M.E00220",
+"TS_GP_BOP_MRECCOM_M.IMPA00980",
+"TS_GP_BOP_MRECCOM_M.IMPA00290",
+"TS_GP_PT_CPI_M.P00011516",
+"TS_GP_BAM_M2_W.M000500",
+"TS_GP_IR_REPOMR_D.ORR",
+"TS_GP_RLS_PSAUTO_M.TAS_001000",
+"TS_GP_RLS_CEMSEC_M.C_002000",
+"TS_GP_MFS_EPUI_M.EPUI4",
+"TS_GP_BOP_XRECCOM_M.EXPA00600",
+"TS_GP_RLS_SALEFERT_M.F_001000",
+"TS_GP_RL_LSM1516_M.LSM000160000",
+"TS_GP_BAM_M2_W.M000070",
+"TS_GP_RLS_POLSALE_M.P_001000",
+"TS_GP_RLS_ELECGEN_M.E_001000",
+"TS_GP_PT_CPI_M.P00081516",
+"TS_GP_RLS_CPI0708_M.P00010708",
+"TS_GP_RLS_CPI0708_M.P00020708",
+"TS_GP_RL_LSM_M.LSM000160000"
+)
+
+series_names_r = c(
+      "CAB",
+      "Balance on Trade",
+      "Remittances",
+      "SBP Reserves",
+      "Credit to Private Sector",
+      "USD/PKR",
+      "Machinery Imports",
+      "Oil Imports",
+      "CPI",
+      "M2 Growth",
+      "Overnight Repo Rate",
+      "Auto sales",
+      "Domestic Cement Sales",
+      "EPU Index",
+      "Textile Exports",
+      "Fertilizers sales",
+      "LSM",
+      "M2",
+      "POL sales",
+      "Electricity Generation",
+      "WPI",
+      "CPI (old)",
+      "WPI (old)",
+      "LSM (old)"
+)
+
+mapping <- tibble(series_key = des_series,series_names_r = series_names_r)
+
+# historical m2 data from SBP website, (not on easydata)
+m2_old <- 
+  readxl::read_excel("m2_2.xlsx") %>% 
+  pivot_longer(cols = -1,names_to = "date_actual") %>% 
+  mutate(date_actual = as.Date(str_sub(date_actual,1,5) %>% as.numeric(),origin = "1899-12-30")) %>% 
+  select(series_names_r = date,value,date = date_actual) %>% 
+  group_by(date,series_names_r) %>% 
+  summarize(value = mean(value,na.rm = T),.groups = "drop") %>% 
+  group_by(y = year(date),m = month(date)) %>% 
+  filter(date == max(date)) %>%
+  ungroup() %>% 
+  mutate(date = ceiling_date(date,"months")-1) %>% 
+  select(date,series_names_r, value)
+
+m2_new_date <- 
+  combined_data %>%
+  filter(series_key=="TS_GP_BAM_M2_W.M000070") %>% 
+  pull(date) %>% min()
+
+m2 <- 
+  m2_old %>% 
+  filter(date < m2_new_date) %>% 
+  bind_rows(
+    combined_data %>%
+      filter(
+        series_key %in% c(
+          "TS_GP_BAM_M2_W.M000070",
+          "TS_GP_BAM_M2_W.M000150",
+          "TS_GP_BAM_M2_W.M000340"
+          )
+        )%>% 
+      select(value,date,series_names_r = series_name) %>% 
+      mutate(series_names_r = case_when(
+        series_names_r=="Broad Money (liability side)"~"m2",
+        series_names_r=="Government Borrowings for Budgetary Support"~"borrowing",
+        series_names_r=="Credit to Private Sector"~"cps",
+        TRUE~NA
+      )) %>% 
+      group_by(y = year(date),m = month(date)) %>% 
+      filter(date == max(date)) %>%
+      ungroup() %>% 
+      mutate(date = ceiling_date(date,"months")-1) %>% 
+      select(-y,-m)
+  )
+
+# LSM data prep (handling of different bases)
+lsm <- 
+  combined_data %>% 
+  left_join(mapping,by = c("series_key")) %>% 
+  filter(str_detect(series_names_r,"(?i)lsm")) %>% 
+  select(-series_key,-series_name,-dataset_name) %>% 
+  pivot_wider(names_from = series_names_r,values_from = value) %>% 
+  arrange(date) 
+
+lsm_factor <- 
+  lsm%>% 
+  filter(!is.na(LSM) & !is.na(`LSM (old)`)) %>% 
+  mutate(lsm2 = LSM/`LSM (old)`) %>% 
+  summarize(exp(mean(log(lsm2)))) %>% pull()
+
+lsm <- 
+  lsm %>% 
+  mutate(lsm = if_else(is.na(LSM),`LSM (old)`*lsm_factor,LSM)) %>% 
+  select(date,lsm) %>% 
+  mutate(date = if_else(
+    date==ymd("2016-2-28"),
+    ymd("2016-2-29"),
+    date
+  ))
+
+# preparation of inflation data to be combined with the overall dataset
+inflation <- 
+  combined_data %>% 
+  left_join(mapping,by = c("series_key")) %>% 
+  filter(str_detect(series_names_r,"(?i)cpi|wpi")) %>% 
+  select(-series_key,-series_name,-dataset_name) %>% 
+  pivot_wider(names_from = series_names_r,values_from = value) %>% 
+  janitor::clean_names() %>% 
+  arrange(date) %>% 
+  filter_at(vars(cpi:wpi_old),any_vars(!is.na(.))) %>% 
+  mutate(cpi = if_else(is.na(cpi),cpi_old,cpi),
+         wpi = if_else(is.na(wpi),wpi_old,wpi)) %>% 
+  select(-wpi_old,-cpi_old) %>% 
+  {
+    data <- .
+    data %>% 
+      bind_rows(
+        read_csv("old-inflation-data.csv") %>%
+          filter(str_detect(series_name, "yoy")) %>%
+          mutate(
+            series_names_r = case_when(
+              series_name == "cpi_yoy" ~ "cpi",
+              series_name == "wpi_yoy" ~ "wpi",
+              TRUE ~ NA
+            )
+          ) %>%
+          filter(!is.na(series_names_r)) %>%
+          select(date, value, series_names_r) %>%
+          pivot_wider(names_from = series_names_r) %>%
+          filter(date < data %>% pull(date) %>% min())
+      )
+  }
+  
+# joining everything together
+final_data <- 
+  combined_data %>%
+  left_join(mapping, by = c("series_key")) %>%
+  filter(!is.na(series_names_r)) %>%
+  filter(!(str_detect(series_names_r, "(?i)cpi|wpi"))) %>%
+  filter(!(str_detect(series_names_r, "(?i)lsm"))) %>%
+  filter(series_names_r != "M2", series_names_r != "M2 Growth") %>%
+  filter(date == (ceiling_date(date, "months") - 1)) %>%
+  select(series_names_r, value, date) %>%
+  bind_rows(m2) %>% 
+  pivot_wider(names_from = series_names_r,values_from = value) %>% 
+  arrange(date) %>% 
+  full_join(inflation) %>% 
+  full_join(lsm) %>% 
+  arrange(date) %>% 
+  select(-`EPU Index`,-`Credit to Private Sector`,-`Overnight Repo Rate`) %>%
+  filter(date >= ymd("2007-7-1")) %>% 
+  select(
+    -c(CAB,`Balance on Trade`,`Remittances`,`SBP Reserves`,`POL sales`,`Electricity Generation`)
+  ) %>% 
+  # drop_na() %>% 
+  janitor::clean_names()
+
+# final_data %>%
+#   write_csv("final_data.csv")
+
+
+```
+
+The other main dataset that we use in this work consists of historical data on only the inflation variables, like CPI, WPI, SPI and USD/PKR. As well as their lags. We find historical spliced inflation data from old SBP publications as well as easydata. We combine everything together for one clean final output called data_inflation_only_var. In the process, for 2008 onwards, we use the inflation data available on easydata (and not old publications)
+
+```{python inflation only vars data prep}
+
+import pandas as pd
+import numpy as np
+import os
+import glob
+import seaborn as sns
+import re
+import datetime
+import janitor
+from dateutil.relativedelta import relativedelta
+from dateutil.parser import parse
+
+os.getcwd()
+
+# Compendium Data
+
+compendium = pd.read_excel("Compendium-Web (2).xlsx",sheet_name="Monthly Compendium")
+
+compendium = compendium.iloc[:,[2]+list(range(9,len(compendium.columns)))] 
+compendium.columns = ['var']+compendium.iloc[0][1:].to_list()
+
+series_to_extract = [
+  'CPI Spliced Series', 'WPI Spliced Series', 'SPI Spliced Series'
+  ]
+
+compendium = (
+    compendium[
+        (compendium[compendium.columns[0]].
+        fillna("").
+        isin(series_to_extract))
+        ]
+)
+
+compendium = (
+  compendium.\
+  melt(id_vars = 'var',value_vars = compendium.columns[1:],var_name = 'date',value_name = 'value')
+)
+
+compendium.iloc[:,1] = \
+  [parse(x)+relativedelta(day = 31) for x in ['01-'+x if len(x)==6 else x for x in compendium.iloc[:,1].astype(str)]]
+
+compendium2 = (
+    compendium.\
+    dropna().\
+    pivot(index='date', columns='var', values='value').
+    clean_names()
+).reset_index()
+
+compendium2.columns.name = None
+compendium2.columns = ['date','cpi','spi','wpi']
+
+compendium2['date'] = [x.date() for x in compendium2['date']]
+
+def first_non_na(data,col_name,period_col):
+  return data.sort_values(period_col)[[period_col,col_name]].dropna().iloc[0,0]
+
+compendium2 = \
+  compendium2[
+    (compendium2['date'] >= max([first_non_na(compendium2, x,'date') for x in ['cpi', 'spi', 'wpi']]))&
+    (compendium2['date'] <datetime.date(2009,7,31))].\
+  reset_index(drop=True)
+
+for col in compendium2.columns[1:]:
+  compendium2[col] = compendium2[col].astype(float)
+  compendium2[f'{col}_yoy'] = (compendium2[col]/compendium2[col].shift(12) - 1)*100
+  compendium2[f'{col}_mom'] = (compendium2[col]/compendium2[col].shift(1) - 1)*100
+
+compendium3 = \
+  compendium2.\
+  melt(id_vars = 'date',value_vars = compendium2.columns[1:],value_name = 'value',var_name = 'series_name').\
+  dropna().\
+  query('~(series_name.isin(["cpi","spi","wpi"])) & (date >= datetime.date(1977,7,31))').\
+  reset_index(drop = True)
+
+# Easydata inflation files import
+
+inflation_data2 = \
+    pd.concat([pd.read_csv(x,
+                 dtype={'Observation Value': float}) for x in
+     [x for x in glob.glob('.\\easydata files\\*') if os.path.basename(x)[:-4] in ['inflation', 'inflation2','exchange_rates']]
+     ])
+
+des_series_inflation = ["TS_GP_PT_CPI_M.P00081516", 
+                        "TS_GP_PT_CPI_M.P00011516", 
+                        "TS_GP_PT_CPI_M.P00111516",
+                        "TS_GP_PT_CPI_M.P00461516",
+                        "TS_GP_PT_CPI_M.P00531516",
+                        "TS_GP_PT_CPI_M.P00561516",
+                        "TS_GP_RLS_CPI0708_M.P00010708",
+                        "TS_GP_RLS_CPI0708_M.P00020708",
+                        "TS_GP_RLS_CPI0708_M.P00030708",
+                        "TS_GP_RLS_CPI0708_M.P00040708",
+                        "TS_GP_RLS_CPI0708_M.P00050708",
+                        "TS_GP_RLS_CPI0708_M.P00060708",
+                        "TS_GP_ER_FAERPKR_M.E00220"]
+
+inflation_data2 = inflation_data2[inflation_data2['Series Key'].isin(des_series_inflation)]
+inflation_data2['date'] = pd.to_datetime(inflation_data2['Observation Date']).dt.date
+inflation_data2.columns = [x.lower().strip().replace(" ","_") for x in inflation_data2.columns]
+
+inflation_data2 = \
+  inflation_data2[['date','dataset_name', 'observation_value','series_name','series_key','series_display_name']].\
+  rename(columns = {'observation_value':'value'}).\
+  sort_values(['series_key','date'])
+
+
+inflation_data2 = \
+  inflation_data2[
+    ((inflation_data2['series_key'].isin([x for x in des_series_inflation if 'RLS_CPI0708' in x])) &
+     (inflation_data2['date'] < datetime.date(2016, 7, 31))) |
+    ((inflation_data2['series_key'].isin([x for x in des_series_inflation if 'TS_GP_PT_CPI_M' in x])) &
+     (inflation_data2['date'] >= datetime.date(2016, 7, 31))) |
+    (inflation_data2['series_key'].isin([x for x in des_series_inflation if 'ER_FAERPKR' in x])) 
+     ].\
+      sort_values(['series_name','date'])
+
+mapping = pd.DataFrame({'series_name': ['Average Exchange rate of Pak Rupees per U.S. Dollar',
+                                        'General CPI, an Inflation Measure (Month-on-Month basis)',
+                                        'General CPI, an Inflation Measure (Year-on-Year basis)',
+                                        'National CPI, an Inflation Measure (Month-on-Month basis)',
+                                        'National CPI, an Inflation Measure (Year-on-Year basis)',
+                                        'SPI, an Inflation Measure (Month-on-Month basis)',
+                                        'SPI, an Inflation Measure (Year-on-Year basis)',
+                                        'WPI, an Inflation Measure (Month-on-Month basis)',
+                                        'WPI, an Inflation Measure (Year-on-Year basis)'],
+                        'series_name2': ['er', 'cpi_mom', 'cpi_yoy', 'cpi_mom', 'cpi_yoy', 'spi_mom', 'spi_yoy', 'wpi_mom', 'wpi_yoy']})
+
+inflation_data2 = \
+  inflation_data2.\
+  merge(mapping, how='left', on='series_name')[['date', 'series_name2', 'value']].\
+  rename(columns={'series_name2': 'series_name'}).\
+  query('(series_name=="er") | (series_name!="er" & date>=datetime.date(2009,7,31))')
+
+inflation_data2.groupby('series_name',as_index=False).agg(
+  min_date = ('date',min),max_date = ('date',max)
+)
+
+combined_inflation_data = (
+    pd.concat([compendium3, inflation_data2], axis=0).\
+    pivot(index='date', columns='series_name', values='value').\
+    sort_values(['date'], axis=0)
+)
+
+combined_inflation_data['er_yoy'] = \
+  (combined_inflation_data['er']/combined_inflation_data['er'].shift(12) - 1)*100
+combined_inflation_data['er_mom'] = \
+  (combined_inflation_data['er']/combined_inflation_data['er'].shift(1) - 1)*100 
+
+combined_inflation_data = \
+  combined_inflation_data.drop('er',axis = 1).\
+  query('date >= datetime.date(1977,7,31)').\
+  dropna().\
+  reset_index()
+
+combined_inflation_data.columns.name = None
+
+for column in [x for x in combined_inflation_data.columns if x!='date']:
+  for lag in range(1,13):
+    combined_inflation_data[f'{column}_l{lag}'] = combined_inflation_data[column].shift(lag)
+
+data_inflation_only_vars = (
+  combined_inflation_data.\
+  drop([y for y in [x for x in combined_inflation_data.columns if not '_l' in x] if y not in ['cpi_yoy','date']],axis = 1).\
+  dropna().\
+  rename(columns = {'cpi_yoy':'cpi'}).\
+  reset_index(drop = True)
+)
+
+# data_inflation_only_vars.to_csv('data_inflation_only_vars.csv',index = False)
+
+```
+
+Finally we arrive on the modelling stage. We first prepare 3 different data tables: 1) after importing the final_data.csv file, we do a little bit of feature engineering, introducing growth rates and lags. 2) same as 1) but with variables pertaining to fertilizer sales excluded to allow for more data for training. 3) the dataset we build above, consisting only of CPI, WPI, SPI, USD/PKR and their lags.
+
+We then introduce a function called modeller that takes in a variety of inputs like dataframe, whether to apply PCA, PCA variance explainability ratio (if applicable), ratio of data to be used for model training, and finally Cross-Validation (CV) type (Time Series or non-TS K-fold), and folding of CV.
+
+We run this function through 192 different combinations of inputs, saving the model results to disk. This results in 192 different fully hyper-tuned XGBoost models. We then consolidate the results of all these models in a single dataframe and export it to csv.
+
+```{python inflation modelling using xgboost}
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import os
+import glob
+import seaborn as sns
+from sklearn import preprocessing
+from sklearn.model_selection import train_test_split, GridSearchCV, TimeSeriesSplit, RandomizedSearchCV
+from sklearn.metrics import mean_absolute_percentage_error, mean_squared_error
+from sklearn.decomposition import PCA
+import xgboost as xgb
+import re
+from itertools import product
+import pickle
+
+os.chdir(r"C:\Users\ijlal\OneDrive\Documents\Personal\Portfolio\inflation-ml")
+
+# data prep
+data_multi_var_init = pd.read_csv('final_data.csv')
+
+for column in ['m2','cps','borrowing', 'lsm','usd_pkr']:
+  for pct_change in ['mom','yoy']:
+    data_multi_var_init[f'{column}_{pct_change}'] = data_multi_var_init[column].pct_change(periods = 12 if pct_change=='yoy' else 1)
+
+data_multi_var_init = data_multi_var_init.drop(['m2','cps','borrowing', 'lsm','usd_pkr'],axis = 1)
+
+for column in [x for x in data_multi_var_init.columns if x not in ['date']]:
+  for lag in [1,3,6,12]:
+    data_multi_var_init[f'{column}_l{lag}'] = data_multi_var_init[column].shift(lag)
+
+data_multi_var_init = data_multi_var_init.drop([
+    'auto_sales', 'domestic_cement_sales', 'textile_exports',
+    'fertilizers_sales', 'oil_imports', 'machinery_imports', 'wpi',
+    'm2_mom', 'm2_yoy', 'cps_mom', 'cps_yoy', 'borrowing_mom',
+    'borrowing_yoy', 'lsm_mom', 'lsm_yoy', 'usd_pkr_mom', 'usd_pkr_yoy'
+], axis=1)
+
+data_multi_var_init['date'] = pd.to_datetime(data_multi_var_init['date'])
+data_multi_var_init['month'] = data_multi_var_init['date'].dt.month
+data_multi_var_init['quarter'] = data_multi_var_init['date'].dt.quarter
+
+data_with_multi_variables_fert_excluded = \
+  data_multi_var_init.\
+  drop([x for x in data_multi_var_init.columns if 'fertilizer' in x],axis = 1).\
+  dropna().\
+  reset_index(drop = True)
+
+data_with_multi_variables = data_multi_var_init.dropna().reset_index(drop = True)
+
+data_only_inflation_var = pd.read_csv('data_inflation_only_vars.csv')
+
+# modelling
+def modeller(data_frame: str, pca: bool,  pca_ratio: float,  training_ratio: float,  cv_type: ['ts','normal'],  cv_splits: int):
+  df = globals()[data_frame]
+  df = df.dropna().reset_index(drop = True)
+  X = df.drop(['cpi','date'],axis = 1)
+  y = df['cpi']
+  scaler = preprocessing.StandardScaler()
+  X_scaled = scaler.fit_transform(X)
+
+  if pca == True:
+    pca = PCA(n_components=pca_ratio)
+    pca.fit(X_scaled)
+    features = pca.transform(X_scaled)
+  else:
+    features = X_scaled
+  target = y
+
+  training_index = int(round(training_ratio*features.shape[0],0))
+  X_train = pd.DataFrame(features).iloc[:training_index]
+  y_train = target.iloc[:training_index]
+  X_test = pd.DataFrame(features).iloc[training_index:]
+  y_test = target.iloc[training_index:]
+  
+  if cv_type=='ts':
+    tscv = TimeSeriesSplit(n_splits = cv_splits)
+    cv_to_be_applied = tscv
+  else:
+    cv_to_be_applied = cv_splits
+  
+  xgb_reg = xgb.XGBRegressor()
+  param_grid = {
+    "learning_rate": [0.01, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3],
+    "max_depth": [3, 5, 7],
+    "min_child_weight": [1, 3, 5, 7, 9, 13],
+    "n_estimators": [100, 200, 300],
+    'gamma': [0, 0.1, 0.2]
+  }
+
+  grid_search = GridSearchCV(xgb_reg, 
+                            param_grid=param_grid,
+                            scoring="neg_mean_squared_error",
+                            cv = cv_to_be_applied,
+                            n_jobs=-1,
+                            verbose=2)
+
+  grid_search.fit(X_train, y_train)
+  return([grid_search, features, target,y_test, X_test, y_train, X_train])
+
+
+data_tba = ['data_with_multi_variables', 'data_with_multi_variables_fert_excluded', 'data_only_inflation_var']
+pca = [True, False]
+pca_rate = [0.95, 0.9]
+training_ratio = [0.65, 0.7, 0.75, 0.8]
+cv_type = ['ts','normal']
+cv_splits = [3,5]
+
+iterable = product(data_tba, pca,pca_rate,training_ratio,cv_type,cv_splits)
+
+for a, b, c, d, e, f in iterable:  
+  filename = "./model_results/model_results-" + "_".join([str(x) for x in [a,b,c,d,e,f]]) + ".pkl" 
+  with open(filename, "wb") as f1:
+    pickle.dump(modeller(data_frame = a, pca = b,pca_ratio = c,training_ratio = d,cv_type = e,cv_splits = f), f1)
+
+full_df = []
+for f in glob.glob("./model_results/*pkl"):
+  # f = glob.glob("./model_results/*pkl")[44]
+  with open(f,'rb') as rf:
+    model = pickle.load(rf)
+  print(f)
+  data_name = re.findall('data_with_multi_variables|data_with_multi_variables_fert_excluded|data_only_inflation_var',f)[0]
+  data = globals()[data_name]
+  y_test = model[3]
+  y_pred = model[0].predict(model[4])
+  mape = mean_absolute_percentage_error(y_test,y_pred)
+  part_df = pd.DataFrame({'y_pred': model[0].predict(model[1]),
+                          'y_actual': model[2],
+                          'date':data['date'],
+                          'mape':mape,
+                          'model':re.sub('results|.pkl','',os.path.basename(f))})
+  full_df.append(part_df)
+
+model_results = pd.concat(full_df,axis = 0)
+# model_results.to_csv('model_results.csv',index = False)
+
+# heatmap
+# corr = data.corr()
+# cpi_corr = \
+#   corr[['cpi']].\
+#   sort_values('cpi',ascending=False).reset_index().rename(columns = {'index':'var'}).\
+#   query('var!="cpi"')
+# 
+# sns.barplot(y = cpi_corr['var'],x = cpi_corr['cpi'])
+# sns.heatmap(corr)
+
+```
+
+Finally, we analyze the model results. We find out that using only the inflation variables and more historical data results in better estimates. The minimum mean absolute percentage error (mape) was 0.14 for a model trained on the inflation_only_vars data. To be more precise, we find out that without PCA and without any kind of time-series cross-validation (with normal 5-fold CV) gives us the best results. The plot for the out-of-sample performance of the best model is saved as best_model.pdf.
+
+The naming convention for the models and the facet strips is PCA_PCA Ratio_Training Ratio_Type of Cross Validation_CV Folding
+
+The plots for the top 12 models in each of the three datasets (inflation_only, multiple_vars, multiple_vars_fert_excluded) are saved as plot1, plot2 and plot3.pdf respectively. We can see that the even the best performing models didnt forecast the meteoric rise in prices in the latter half of 2022 and early 2023. 
+
+```{r model results plot}
+
+library(tidyverse)
+library(reticulate)
+library(patchwork)
+setwd("C:/Users/ijlal/OneDrive/Documents/Personal/Portfolio/inflation-ml")
+
+model_results <- 
+  read_csv('model_results.csv') %>% 
+  mutate(
+    model = str_remove(model,"model_-"),
+    data_type = map_chr(model,function(x){
+      # browser()
+      x %>% 
+        str_split("_") %>% 
+        .[[1]] %>% 
+        .[-((length(.)-4):(length(.)))] %>% 
+        paste(collapse = "_")
+    }),
+    model = str_remove(model,paste0(data_type,"_")),
+    date = as.Date(date)
+  )
+
+mape <- 
+  model_results %>% 
+  distinct(data_type,model,mape)
+
+mape_top12 <- 
+  mape %>% 
+  group_by(data_type) %>% 
+  slice_min(mape,n = 12) %>% 
+  ungroup()
+
+model_results %>%
+  mutate(
+    data_type2 = case_when(
+      data_type=="data_only_inflation_var"~"With only inflation variables - like WPI, CPI and SPI and also USD/PKR - as well as their lags",
+      data_type=="data_with_multi_variables"~"With a dataset consisting of multiple high frequency demand and supply-side indicators",
+      data_type=="data_with_multi_variables_fert_excluded"~"With a dataset consisting of multiple high frequency demand and supply-side indicators (excluding fertilizer sales)",
+    )
+  ) %>% 
+  semi_join(
+    mape_top12,by = c("data_type","model")
+  ) %>% 
+  split(.$data_type)  %>% 
+  imap(function(data,y){
+    ind <- match(y,names(.))
+    p <- 
+      data %>%
+      mutate(title = paste(model, round(mape, 3), sep = " -- ")) %>%
+      {
+        d1 <- .
+        d1 %>%
+          mutate(title = factor(
+            title,
+            levels =
+              d1 %>%
+              distinct(title, mape) %>%
+              arrange(mape) %>%
+              pull(title)
+          ))
+      } %>% 
+      ggplot()+
+      geom_line(aes(x = date, y = y_actual,color = "Actual"),linewidth = 0.8)+
+      geom_line(aes(x = date, y = y_pred,color = "Predicted"),linewidth = 0.8)+
+      scale_color_manual(values = c("orange","lightblue"))+
+      labs(x = NULL, y = "CPI (YoY)",color = NULL,title = data$data_type2 %>% unique())+
+      facet_wrap(~title)+
+      theme_bw()+
+      theme(
+        legend.position = "bottom",
+        plot.title = element_text(size = 15,hjust = 0.5,margin = margin(t = 10, b = 10)),
+        legend.text = element_text(size = 12)
+      )
+    ggsave(plot = p,filename = paste0("plot_",ind,".pdf"),width = 14, height = 10)
+  })
+
+model_results %>% 
+  filter(data_type=="data_only_inflation_var",
+         model=="False_0.95_0.7_normal_5") %>% 
+  filter(date>=ymd("2007-1-1")) %>% 
+  mutate(
+    year = year(date),
+    date = ymd(paste(year(date),month(date),1,sep = "-"))
+    ) %>% 
+  ggplot()+
+  geom_line(aes(x = date, y = y_actual,color = "Actual"),linewidth = 0.8)+
+  geom_line(aes(x = date, y = y_pred,color = "Predicted"),linewidth = 0.8)+
+  scale_color_manual(values = c("lightblue","orange"))+
+  scale_x_date(date_labels = "%b")+
+  labs(x = NULL, y = "CPI (YoY)",color = NULL,title = "Best Performing Model")+
+  theme_bw()+
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(size = 15,hjust = 0.5,margin = margin(t = 10, b = 10)),
+    legend.text = element_text(size = 12)
+  )+
+  facet_wrap(~year,scales = "free_x")+
+  ggsave(filename = "best_model.pdf",width = 14, height = 10)
+
+
+```
