@@ -16,7 +16,7 @@ We do a lot of data wrangling to arrive at a final clean table that is exported 
 
 library(tidyverse)
 
-setwd("C:/Users/ijlal/OneDrive/Documents/Personal/Portfolio/inflation-ml")
+
 
 # import of easydata data files
 combined_data <- 
@@ -415,7 +415,6 @@ import re
 from itertools import product
 import pickle
 
-os.chdir(r"C:\Users\ijlal\OneDrive\Documents\Personal\Portfolio\inflation-ml")
 
 # data prep
 data_multi_var_init = pd.read_csv('final_data.csv')
@@ -551,14 +550,14 @@ Finally, we analyze the model results. We find out that using only the inflation
 
 The naming convention for the models and the facet strips is PCA_PCA Ratio_Training Ratio_Type of Cross Validation_CV Folding
 
-The plots for the top 12 models in each of the three datasets (inflation_only, multiple_vars, multiple_vars_fert_excluded) are saved as plot1, plot2 and plot3.pdf respectively. We can see that the even the best performing models didnt forecast the meteoric rise in prices in the latter half of 2022 and early 2023. 
+The plots for the top 12 models in each of the three datasets (inflation_only, multiple_vars, multiple_vars_fert_excluded) are saved as plot1, plot2 and plot3.pdf respectively. We can see that the even the best performing models didnt forecast the meteoric rise in prices in the latter half of 2022 and early 2023.
 
 ```{r model results plot}
 
 library(tidyverse)
 library(reticulate)
 library(patchwork)
-setwd("C:/Users/ijlal/OneDrive/Documents/Personal/Portfolio/inflation-ml")
+
 
 model_results <- 
   read_csv('model_results.csv') %>% 
